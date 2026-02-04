@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI vs AI Chess Betting</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      body {
+        margin: 24px;
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        gap: 24px;
+      }
+      h1 {
+        margin: 0 0 8px;
+      }
+      .panel {
+        border: 1px solid #c9c9c9;
+        border-radius: 10px;
+        padding: 16px;
+      }
+      label {
+        display: block;
+        font-size: 0.9rem;
+        margin-bottom: 6px;
+      }
+      input,
+      select,
+      button,
+      textarea {
+        width: 100%;
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid #b6b6b6;
+        font-size: 0.95rem;
+        box-sizing: border-box;
+        margin-bottom: 12px;
+      }
+      button {
+        cursor: pointer;
+      }
+      .board {
+        display: grid;
+        grid-template-columns: repeat(8, 1fr);
+        border: 2px solid #444;
+        width: min(70vh, 70vw);
+        max-width: 520px;
+      }
+      .square {
+        aspect-ratio: 1 / 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 2rem;
+        user-select: none;
+      }
+      .light {
+        background: #f0d9b5;
+      }
+      .dark {
+        background: #b58863;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+      }
+      .status {
+        margin-top: 12px;
+        font-size: 0.95rem;
+      }
+      .moves {
+        max-height: 200px;
+        overflow-y: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85rem;
+        background: #0f172a12;
+        padding: 8px;
+        border-radius: 8px;
+      }
+      .logs {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85rem;
+        min-height: 120px;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="panel">
+      <h1>AI vs AI Chess</h1>
+      <p>
+        Two models play each other. Pick models, place a bet on the next move,
+        then start the game. The AIs move every 30 seconds until a winner.
+      </p>
+
+      <label for="token">Replicate API Token (optional)</label>
+      <input id="token" placeholder="r8_..." value="1000" />
+
+      <label for="whiteModel">White model ID</label>
+      <input
+        id="whiteModel"
+        placeholder="model id for white"
+        value=""
+      />
+
+      <label for="blackModel">Black model ID</label>
+      <input
+        id="blackModel"
+        placeholder="model id for black"
+        value=""
+      />
+
+      <div class="row">
+        <button id="startBtn">Start game</button>
+        <button id="stopBtn">Stop game</button>
+      </div>
+      <div class="row">
+        <button id="resetBtn">Reset game</button>
+      </div>
+
+      <h3>Bet on next move</h3>
+      <label for="betMove">Choose a move</label>
+      <select id="betMove"></select>
+
+      <label for="betAmount">Bet amount</label>
+      <input id="betAmount" type="number" min="1" value="5" />
+
+      <button id="placeBetBtn">Place bet</button>
+      <div class="status" id="betStatus">Balance: 100</div>
+    </section>
+
+    <section>
+      <div class="panel">
+        <div class="board" id="board"></div>
+        <div class="status" id="status"></div>
+      </div>
+
+      <div class="panel">
+        <h3>Moves</h3>
+        <div class="moves" id="moves"></div>
+      </div>
+
+      <div class="panel">
+        <h3>Last model output</h3>
+        <textarea class="logs" id="modelOutput" readonly></textarea>
+      </div>
+    </section>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/1.0.0/chess.min.js"></script>
+    <script>
+      const replicateProxy =
+        "https://itp-ima-replicate-proxy.web.app/api/create_n_get";
+      const chess = new Chess();
+      const boardEl = document.getElementById("board");
+      const statusEl = document.getElementById("status");
+      const movesEl = document.getElementById("moves");
+      const outputEl = document.getElementById("modelOutput");
+      const betMoveEl = document.getElementById("betMove");
+      const betAmountEl = document.getElementById("betAmount");
+      const betStatusEl = document.getElementById("betStatus");
+      const tokenEl = document.getElementById("token");
+      const whiteModelEl = document.getElementById("whiteModel");
+      const blackModelEl = document.getElementById("blackModel");
+      const startBtn = document.getElementById("startBtn");
+      const stopBtn = document.getElementById("stopBtn");
+      const resetBtn = document.getElementById("resetBtn");
+      const placeBetBtn = document.getElementById("placeBetBtn");
+
+      const pieceMap = {
+        p: "♟",
+        r: "♜",
+        n: "♞",
+        b: "♝",
+        q: "♛",
+        k: "♚",
+        P: "♙",
+        R: "♖",
+        N: "♘",
+        B: "♗",
+        Q: "♕",
+        K: "♔",
+      };
+
+      let balance = 100;
+      let currentBet = null;
+      let autoInterval = null;
+      let gameStarted = false;
+
+      function renderBoard() {
+        boardEl.innerHTML = "";
+        const board = chess.board();
+        for (let row = 0; row < 8; row += 1) {
+          for (let col = 0; col < 8; col += 1) {
+            const square = document.createElement("div");
+            square.className =
+              "square " + ((row + col) % 2 === 0 ? "light" : "dark");
+            const piece = board[row][col];
+            if (piece) {
+              const symbol = pieceMap[
+                piece.color === "w"
+                  ? piece.type.toUpperCase()
+                  : piece.type.toLowerCase()
+              ];
+              square.textContent = symbol;
+            }
+            boardEl.appendChild(square);
+          }
+        }
+      }
+
+      function updateStatus() {
+        if (chess.isCheckmate()) {
+          statusEl.textContent = "Checkmate! " +
+            (chess.turn() === "w" ? "Black" : "White") +
+            " wins.";
+          return;
+        }
+        if (chess.isDraw()) {
+          statusEl.textContent = "Draw.";
+          return;
+        }
+        statusEl.textContent =
+          (chess.turn() === "w" ? "White" : "Black") + " to move.";
+      }
+
+      function updateMovesList() {
+        const history = chess.history();
+        let text = "";
+        for (let i = 0; i < history.length; i += 2) {
+          const moveNum = i / 2 + 1;
+          const whiteMove = history[i] || "";
+          const blackMove = history[i + 1] || "";
+          text += moveNum + ". " + whiteMove + " " + blackMove + "\n";
+        }
+        movesEl.textContent = text.trim();
+      }
+
+      function updateBetMoves() {
+        const legalMoves = chess.moves();
+        betMoveEl.innerHTML = "";
+        legalMoves.forEach((move) => {
+          const option = document.createElement("option");
+          option.value = move;
+          option.textContent = move;
+          betMoveEl.appendChild(option);
+        });
+      }
+
+      function updateBalance() {
+        betStatusEl.textContent =
+          "Balance: " + balance + (currentBet ? " | Bet placed" : "");
+      }
+
+      async function askForMove(modelId, prompt, authToken) {
+        const data = {
+          model: modelId,
+          input: {
+            prompt,
+          },
+        };
+        const fetchOptions = {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: authToken ? `Bearer ${authToken}` : "",
+          },
+          body: JSON.stringify(data),
+        };
+        const response = await fetch(replicateProxy, fetchOptions);
+        const prediction = await response.json();
+        const output =
+          prediction?.output ??
+          prediction?.result ??
+          prediction?.data ??
+          prediction;
+        return { raw: output, prediction };
+      }
+
+      async function askTripo(prompt, authToken) {
+        const data = {
+          model: "tripoai/tripo-sr",
+          input: {
+            prompt,
+          },
+        };
+        const fetchOptions = {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: authToken ? `Bearer ${authToken}` : "",
+          },
+          body: JSON.stringify(data),
+        };
+        console.log("sending to replicate:", fetchOptions, "url", replicateProxy);
+        const response = await fetch(replicateProxy, fetchOptions);
+        const prediction = await response.json();
+        console.log("TRIPO OUTPUT", prediction);
+        return prediction;
+      }
+
+      function extractMoveFromOutput(outputText) {
+        if (!outputText) return null;
+        const text = Array.isArray(outputText)
+          ? outputText.join(" ")
+          : String(outputText);
+        const uciMatch = text.match(/[a-h][1-8][a-h][1-8][qrbn]?/i);
+        if (uciMatch) {
+          return uciMatch[0].toLowerCase();
+        }
+        const legal = chess.moves();
+        const sanMatch = legal.find((move) =>
+          text.toLowerCase().includes(move.toLowerCase())
+        );
+        return sanMatch || null;
+      }
+
+      function applyMove(moveStr) {
+        const legal = chess.moves({ verbose: true });
+        if (!moveStr) return null;
+        const uci = moveStr.toLowerCase().trim();
+        if (uci.length >= 4) {
+          const from = uci.slice(0, 2);
+          const to = uci.slice(2, 4);
+          const promotion = uci.slice(4, 5);
+          const match = legal.find(
+            (move) =>
+              move.from === from &&
+              move.to === to &&
+              (!promotion || move.promotion === promotion)
+          );
+          if (match) {
+            return chess.move({
+              from: match.from,
+              to: match.to,
+              promotion: match.promotion,
+            });
+          }
+        }
+        const sanMatch = legal.find(
+          (move) => move.san.toLowerCase() === moveStr.toLowerCase()
+        );
+        if (sanMatch) {
+          return chess.move(sanMatch.san);
+        }
+        return null;
+      }
+
+      async function getAIMove(modelId) {
+        const legalMoves = chess.moves({ verbose: true });
+        const legalUci = legalMoves
+          .map(
+            (move) =>
+              move.from + move.to + (move.promotion ? move.promotion : "")
+          )
+          .join(" ");
+        const prompt =
+          "You are a chess engine. Respond with ONE move in UCI format only.\n" +
+          "FEN: " +
+          chess.fen() +
+          "\nLegal moves: " +
+          legalUci;
+
+        if (!modelId) {
+          return { move: null, raw: "No model id provided." };
+        }
+
+        try {
+          const result = await askForMove(
+            modelId,
+            prompt,
+            tokenEl.value.trim()
+          );
+          const move = extractMoveFromOutput(result.raw);
+          return { move, raw: result.raw };
+        } catch (error) {
+          return { move: null, raw: String(error) };
+        }
+      }
+
+      function resolveBet(chosenMove) {
+        if (!currentBet) return;
+        const amount = currentBet.amount;
+        if (chosenMove && chosenMove === currentBet.move) {
+          balance += amount;
+          betStatusEl.textContent =
+            "Correct! +" + amount + " (Balance: " + balance + ")";
+        } else {
+          balance -= amount;
+          betStatusEl.textContent =
+            "Wrong! -" + amount + " (Balance: " + balance + ")";
+        }
+        currentBet = null;
+      }
+
+      async function playNextMove() {
+        if (chess.isGameOver()) return;
+        startBtn.disabled = true;
+        stopBtn.disabled = true;
+        placeBetBtn.disabled = true;
+
+        const modelId =
+          chess.turn() === "w"
+            ? whiteModelEl.value.trim()
+            : blackModelEl.value.trim();
+        const { move, raw } = await getAIMove(modelId);
+        outputEl.value = Array.isArray(raw) ? raw.join(" ") : String(raw);
+
+        let applied = applyMove(move);
+        if (!applied) {
+          const legal = chess.moves({ verbose: true });
+          const fallback = legal[Math.floor(Math.random() * legal.length)];
+          applied = chess.move(fallback.san);
+        }
+
+        resolveBet(applied ? applied.san : null);
+        renderBoard();
+        updateStatus();
+        updateMovesList();
+        updateBetMoves();
+        updateBalance();
+
+        startBtn.disabled = false;
+        stopBtn.disabled = false;
+        placeBetBtn.disabled = false;
+      }
+
+      function startAutoPlay() {
+        if (autoInterval) return;
+        autoInterval = setInterval(() => {
+          if (chess.isGameOver()) {
+            stopAutoPlay();
+            return;
+          }
+          playNextMove();
+        }, 30000);
+        startBtn.textContent = "Game running";
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+      }
+
+      function stopAutoPlay() {
+        if (autoInterval) {
+          clearInterval(autoInterval);
+          autoInterval = null;
+        }
+        startBtn.textContent = "Start game";
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+
+      function resetGame() {
+        chess.reset();
+        currentBet = null;
+        renderBoard();
+        updateStatus();
+        updateMovesList();
+        updateBetMoves();
+        updateBalance();
+        outputEl.value = "";
+        stopAutoPlay();
+        gameStarted = false;
+      }
+
+      startBtn.addEventListener("click", () => {
+        if (gameStarted) return;
+        gameStarted = true;
+        startAutoPlay();
+        playNextMove();
+      });
+      stopBtn.addEventListener("click", stopAutoPlay);
+      resetBtn.addEventListener("click", resetGame);
+      placeBetBtn.addEventListener("click", () => {
+        const amount = Number(betAmountEl.value);
+        if (!amount || amount <= 0) return;
+        const move = betMoveEl.value;
+        currentBet = { move, amount };
+        betStatusEl.textContent =
+          "Bet placed on " + move + " (Balance: " + balance + ")";
+      });
+
+      renderBoard();
+      updateStatus();
+      updateMovesList();
+      updateBetMoves();
+      updateBalance();
+      stopBtn.disabled = true;
+    </script>
+  </body>
+</html>
